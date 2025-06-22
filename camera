@@ -1,0 +1,405 @@
+local RunService = game:GetService("RunService")
+local ParallelScheduler = require(game.ReplicatedStorage.ParallelScheduler)
+local ReplicatedStorage = game.ReplicatedStorage
+local ModuleScript = script:WaitForChild("ModuleScript")
+local Camera = game.Workspace.CurrentCamera
+local ScreenGui = game.Players.LocalPlayer.PlayerGui.ScreenGui
+
+local ResolutionX = 100-- also change in module script
+local ResolutionY = 100 -- same thing here
+
+local ModuleTable = ParallelScheduler:LoadModule(ModuleScript)
+
+local PixelSizeX, PixelSizeY = ScreenGui.AbsoluteSize.X / ResolutionX, (ScreenGui.AbsoluteSize.Y-50) / ResolutionY
+local Offset = {0, 0}
+
+if PixelSizeX > PixelSizeY then 
+	PixelSizeX = PixelSizeY
+	Offset[1] = (ScreenGui.AbsoluteSize.X - PixelSizeX * ResolutionX) * 0.5
+else 
+	PixelSizeY = PixelSizeX
+	Offset[2] = (ScreenGui.AbsoluteSize.Y - PixelSizeY * ResolutionY) * 0.5
+end
+
+local IndexLookup = {}
+local Pixels = {}
+
+local Theme = "Default"
+ScreenGui.Intro.Position = UDim2.fromOffset(Offset[1], Offset[2])
+ScreenGui.Intro.Size = UDim2.fromOffset(PixelSizeX * ResolutionX, PixelSizeY * ResolutionY)
+game.ReplicatedStorage.CurrentTheme.Changed:Connect(function(value)
+	Theme = value
+	for _, TextLabel in ipairs(Pixels) do
+		TextLabel[1].TextColor3 = script.Themes[Theme].TextColor.Value
+	end
+	ScreenGui.Frame.BackgroundColor3 = script.Themes[Theme].BackgroundColor.Value
+	ScreenGui.Intro.TextColor3 = script.Themes[Theme].TextColor.Value
+	ScreenGui.Intro.BackgroundColor3 = script.Themes[Theme].BackgroundColor.Value
+end)
+local function CreateTextLabel(x, y)
+	local TextLabelPosition = UDim2.fromOffset(
+		PixelSizeX * (x - 1) + Offset[1],
+		PixelSizeY * (y - 1) + Offset[2]
+	) 
+	local TextLabelSize = UDim2.fromOffset(
+		PixelSizeX,
+		PixelSizeY
+	)
+
+	local TextLabel = ReplicatedStorage:FindFirstChild("TextLabel") and ReplicatedStorage.Frame:Clone() or Instance.new("TextLabel")
+	TextLabel.Parent = ScreenGui
+	TextLabel.Size = TextLabelSize
+	TextLabel.Position = TextLabelPosition
+	TextLabel.TextSize = 13
+	TextLabel.BackgroundTransparency = 1
+	TextLabel.Text = " "
+	TextLabel.TextColor3 = script.Themes[Theme].TextColor.Value
+	TextLabel.FontFace = Font.fromName("Inconsolata")
+	Pixels[IndexLookup[x][y]] = {TextLabel, 1}
+
+	return TextLabel
+end 
+
+
+local function applySobelOperatorY(width, height)
+	local sobelY = {}
+	for x = 1, width do
+		sobelY[x] = {}
+		for y = 1, height do
+			local gy = 0
+			if y > 1 and y < height then
+				gy = Pixels[IndexLookup[x][y + 1]][2] - Pixels[IndexLookup[x][y - 1]][2]
+			elseif y == 1 then
+				gy = Pixels[IndexLookup[x][y + 1]][2] - Pixels[IndexLookup[x][y]][2]
+			else
+				gy = Pixels[IndexLookup[x][y]][2] - Pixels[IndexLookup[x][y - 1]][2]
+			end
+			sobelY[x][y] = gy
+		end
+	end
+	return sobelY
+end
+
+local function applySobelOperatorX(width, height)
+	local sobelX = {}
+	for x = 1, width do
+		sobelX[x] = {}
+		for y = 1, height do
+			local gx = 0
+			if x > 1 and x < width then
+				gx = Pixels[IndexLookup[x + 1][y]][2] - Pixels[IndexLookup[x - 1][y]][2]
+			elseif x == 1 then
+				gx = Pixels[IndexLookup[x + 1][y]][2] - Pixels[IndexLookup[x][y]][2]
+			else
+				gx = Pixels[IndexLookup[x][y]][2] - Pixels[IndexLookup[x - 1][y]][2]
+			end
+			sobelX[x][y] = gx
+		end
+	end
+	return sobelX
+end
+local threshold = 2
+local preCompedAngles = {}
+for x = -9, 9 do
+	preCompedAngles[x] = {}
+	for y = -9, 9 do
+		preCompedAngles[x][y] = math.atan2(x,y)
+		local angle = preCompedAngles[x][y]
+		if angle < 0 then
+			angle = angle + 2*math.pi
+		end
+		angle %= math.pi
+		if angle >= 0.392699 and angle < 1.178097 then
+			preCompedAngles[x][y] = "/"
+		elseif angle >= 1.178097 and angle < 1.963495 then
+			preCompedAngles[x][y] = "_"
+		elseif angle >= 1.963495 and angle < 2.748894 then
+			preCompedAngles[x][y] = "\\"
+		else
+			preCompedAngles[x][y] = "|"
+		end
+	end
+end
+--[[
+local function detectEdgesAndRenderASCII()
+	local width, height = ResolutionX, ResolutionY
+
+	local sobelX = applySobelOperatorX(width, height)
+	local sobelY = applySobelOperatorY(width, height)
+
+	for x = 1, width do
+		for y = 1, height do
+			local gradientMagnitude = sobelX[x][y]^2 + sobelY[x][y]^2
+			if gradientMagnitude > threshold then
+				local index = IndexLookup[x][y]
+				local pixel = Pixels[index][1]
+
+				local angle = math.atan2(sobelY[x][y], sobelX[x][y]) 
+
+				if angle < 0 then
+					angle = angle + 2*math.pi
+				end
+				angle %= math.pi
+				if angle >= 0.392699 and angle < 1.178097 then
+					pixel.Text = "/"
+				elseif angle >= 1.178097 and angle < 1.963495 then
+					pixel.Text = "_"
+				elseif angle >= 1.963495 and angle < 2.748894 then
+					pixel.Text = "\\"
+				else
+					pixel.Text = "|"
+				end
+			end
+		end
+	end
+end
+]]
+local function detectEdgesAndRenderASCII()
+	local width, height = ResolutionX, ResolutionY
+
+	local sobelX = applySobelOperatorX(width, height)
+	local sobelY = applySobelOperatorY(width, height)
+
+	for x = 1, width do
+		for y = 1, height do
+			local gradientMagnitude = sobelX[x][y]^2 + sobelY[x][y]^2
+			if gradientMagnitude > threshold then
+				local index = IndexLookup[x][y]
+				local pixel = Pixels[index][1]
+
+				pixel.Text = preCompedAngles[sobelY[x][y]][sobelX[x][y]]
+			end
+		end
+	end
+end
+ScreenGui.Frame.BackgroundColor3 = script.Themes[Theme].BackgroundColor.Value
+ScreenGui.Frame.BackgroundTransparency = 0
+ScreenGui.Intro.TextColor3 = script.Themes[Theme].TextColor.Value
+ScreenGui.Intro.BackgroundColor3 = script.Themes[Theme].BackgroundColor.Value
+ScreenGui.Intro.Finished.Event:Wait()
+
+ScreenGui.Intro.Position = UDim2.fromOffset(Offset[1]+3, PixelSizeX * ResolutionY + Offset[2])
+for x = 1, ResolutionX do
+	IndexLookup[x] = {}
+	for y = 1, ResolutionY do
+		IndexLookup[x][y] = 1 + ((x - 1) + (y - 1) * ResolutionX)
+		local Frame = CreateTextLabel(x, y)
+	end
+end
+local function IntroBS()
+	local text = [[     ____  ____      _  __   __           JJ
+	  / ___||  _ \    / \ \ \ / /           JJ
+	 | |  _ | |_) |  / _ \ \ V /            JJ
+	 | |_| ||  _ <  / ___ \ | |             JJ
+	 _\____||_|_\_\/_/  _\_\|_|_      ____  JJ
+	 \ \      / // _ \ |  _ \ | |    |  _ \ JJ
+	  \ \ /\ / /| | | || |_) || |    | | | |JJ
+	   \ V  V / | |_| ||  _ < | |___ | |_| |JJ
+	    \_/\_/   \___/ |_| \_\|_____||____/ JJ
+	   ____  ____      _  __   __           JJ
+	  / ___||  _ \    / \ \ \ / /           JJ
+	 | |  _ | |_) |  / _ \ \ V /            JJ
+	 | |_| ||  _ <  / ___ \ | |             JJ
+	 _\____||_|_\_\/_/  _\_\|_|_      ____  JJ
+	 \ \      / // _ \ |  _ \ | |    |  _ \ JJ
+	  \ \ /\ / /| | | || |_) || |    | | | |JJ
+	   \ V  V / | |_| ||  _ < | |___ | |_| |JJ
+	    \_/\_/   \___/ |_| \_\|_____||____/ JJ
+	   ____  ____      _  __   __           JJ
+	  / ___||  _ \    / \ \ \ / /           JJ
+	 | |  _ | |_) |  / _ \ \ V /            JJ
+	 | |_| ||  _ <  / ___ \ | |             JJ
+	 _\____||_|_\_\/_/  _\_\|_|_      ____  JJ
+	 \ \      / // _ \ |  _ \ | |    |  _ \ JJ
+	  \ \ /\ / /| | | || |_) || |    | | | |JJ
+	   \ V  V / | |_| ||  _ < | |___ | |_| |JJ
+	    \_/\_/   \___/ |_| \_\|_____||____/ JJ
+	   ____  ____      _  __   __           JJ
+	  / ___||  _ \    / \ \ \ / /           JJ
+	 | |  _ | |_) |  / _ \ \ V /            JJ
+	 | |_| ||  _ <  / ___ \ | |             JJ
+	 _\____||_|_\_\/_/  _\_\|_|_      ____  JJ
+	 \ \      / // _ \ |  _ \ | |    |  _ \ JJ
+	  \ \ /\ / /| | | || |_) || |    | | | |JJ
+	   \ V  V / | |_| ||  _ < | |___ | |_| |JJ
+	    \_/\_/   \___/ |_| \_\|_____||____/ JJ]]
+	text = string.split(text, "J")
+	for i = 1, #text - 1 do
+		local str = text[i]
+		text[i] = string.split(str, "")
+	end
+	for x = 1, #text - 1 do
+		for y = 1,  #text[x] do
+			local index = IndexLookup[y][x]
+			Pixels[index][1].Text = text[x][y]
+		end
+		task.wait(math.random()*0)
+	end
+	for x = 1, #text - 1 do
+		for y = 1,  #text[x] do
+			local index = IndexLookup[y][x]
+			Pixels[index][1].Text = " "
+		end
+		task.wait(math.random()*0)
+	end
+	text = [[  ______   __                           JJ
+ | __ ) \ / /                           JJ
+ |  _ \\ V (_)                          JJ
+ | |_) || | _                           JJ
+ |____/ |_|(_)        _                 JJ
+ | |_ _ __ ___  _   _| |_ ___  ___ _ __ JJ
+ | __| '__/ _ \| | | | __/ __|/ _ \ '__|JJ
+ | |_| | | (_) | |_| | |_\__ \  __/ |   JJ
+  \__|_|  \___/ \__,_|\__|___/\___|_|JJ
+  ______   __                           JJ
+ | __ ) \ / /                           JJ
+ |  _ \\ V (_)                          JJ
+ | |_) || | _                           JJ
+ |____/ |_|(_)        _                 JJ
+ | |_ _ __ ___  _   _| |_ ___  ___ _ __ JJ
+ | __| '__/ _ \| | | | __/ __|/ _ \ '__|JJ
+ | |_| | | (_) | |_| | |_\__ \  __/ |   JJ
+  \__|_|  \___/ \__,_|\__|___/\___|_|JJ
+  ______   __                           JJ
+ | __ ) \ / /                           JJ
+ |  _ \\ V (_)                          JJ
+ | |_) || | _                           JJ
+ |____/ |_|(_)        _                 JJ
+ | |_ _ __ ___  _   _| |_ ___  ___ _ __ JJ
+ | __| '__/ _ \| | | | __/ __|/ _ \ '__|JJ
+ | |_| | | (_) | |_| | |_\__ \  __/ |   JJ
+  \__|_|  \___/ \__,_|\__|___/\___|_|JJ
+  ______   __                           JJ
+ | __ ) \ / /                           JJ
+ |  _ \\ V (_)                          JJ
+ | |_) || | _                           JJ
+ |____/ |_|(_)        _                 JJ
+ | |_ _ __ ___  _   _| |_ ___  ___ _ __ JJ
+ | __| '__/ _ \| | | | __/ __|/ _ \ '__|JJ
+ | |_| | | (_) | |_| | |_\__ \  __/ |   JJ
+  \__|_|  \___/ \__,_|\__|___/\___|_|JJ]]
+	text = string.split(text, "J")
+	for i = 1, #text - 1 do
+		local str = text[i]
+		text[i] = string.split(str, "")
+	end
+	for x = 1, #text - 1 do
+		for y = 1,  #text[x] do
+			local index = IndexLookup[y][x]
+			Pixels[index][1].Text = text[x][y]
+		end
+		task.wait(math.random()*0)
+	end
+	for x = 1, #text - 1 do
+		for y = 1,  #text[x] do
+			local index = IndexLookup[y][x]
+			Pixels[index][1].Text = " "
+		end
+		task.wait(math.random()*0)
+	end
+	text = [[              _             J
+   ___ _ __  (_) ___  _   _ J
+  / _ \ '_ \ | |/ _ \| | | |J
+ |  __/ | | || | (_) | |_| |J
+  \___|_| |_|/ |\___/ \__, |J
+  _  \ \   |__/       |___/ J
+ (_)  | |                   J
+  _   | |                   J
+ (_)  | |                   J
+     /_/                    J
+              _             J
+   ___ _ __  (_) ___  _   _ J
+  / _ \ '_ \ | |/ _ \| | | |J
+ |  __/ | | || | (_) | |_| |J
+  \___|_| |_|/ |\___/ \__, |J
+  _  \ \   |__/       |___/ J
+ (_)  | |                   J
+  _   | |                   J
+ (_)  | |                   J
+     /_/                    J
+              _             J
+   ___ _ __  (_) ___  _   _ J
+  / _ \ '_ \ | |/ _ \| | | |J
+ |  __/ | | || | (_) | |_| |J
+  \___|_| |_|/ |\___/ \__, |J
+  _  \ \   |__/       |___/ J
+ (_)  | |                   J
+  _   | |                   J
+ (_)  | |                   J
+     /_/                    J
+              _             J
+   ___ _ __  (_) ___  _   _ J
+  / _ \ '_ \ | |/ _ \| | | |J
+ |  __/ | | || | (_) | |_| |J
+  \___|_| |_|/ |\___/ \__, |J
+  _  \ \   |__/       |___/ J
+ (_)  | |                   J
+  _   | |                   J
+ (_)  | |                   J
+     /_/                    J]]
+	text = string.split(text, "J")
+	for i = 1, #text - 1 do
+		local str = text[i]
+		text[i] = string.split(str, "")
+	end
+	for x = 1, #text - 1 do
+		for y = 1,  #text[x] do
+			local index = IndexLookup[y][x]
+			Pixels[index][1].Text = text[x][y]
+		end
+		task.wait(math.random()*0)
+	end
+	for x = 1, #text - 1 do
+		for y = 1,  #text[x] do
+			local index = IndexLookup[y][x]
+			Pixels[index][1].Text = " "
+		end
+		task.wait(math.random()*0)
+	end
+end
+IntroBS()
+
+print("here")
+local lookup1 = {
+	["/"] = true,
+	["\\"] = true,
+	["_"] = true
+}
+local lookup2 = {
+	["/"] = true,
+	["\\"] = true,
+	["|"] = true
+}
+
+while true do
+	task.wait()
+	local CameraCFrame = Camera.CFrame
+	for y = 1, ResolutionY do 
+		ModuleTable:ScheduleWork(game.Players.LocalPlayer.Name)
+	end
+
+	local ResultsY = ModuleTable:Work()
+
+	for y, ResultsX in ipairs(ResultsY) do 
+		for x, Color in ipairs(ResultsX) do
+			local Index = IndexLookup[x][ResolutionY - y + 1]
+			Pixels[Index][1].Text = Color[1]
+			Pixels[Index][2] = Color[2]
+		end
+	end
+	detectEdgesAndRenderASCII()
+
+	for x = 1, ResolutionX-2 do
+		for y = ResolutionY, 3, -1 do
+			local Index = IndexLookup[x][y] 
+			local RightIndex,BottomIndex = IndexLookup[x+1][y], IndexLookup[x][y-1]
+
+			if lookup2[Pixels[RightIndex][1].Text] and Pixels[Index][1].Text == Pixels[RightIndex][1].Text then
+				Pixels[RightIndex][1].Text = Pixels[IndexLookup[x+2][y]][1].Text
+			end
+			if lookup1[Pixels[BottomIndex][1].Text] and Pixels[Index][1].Text == Pixels[BottomIndex][1].Text then
+				Pixels[BottomIndex][1].Text = Pixels[IndexLookup[x][y-2]][1].Text
+			end
+		end
+	end
+end
